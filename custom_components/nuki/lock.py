@@ -73,17 +73,15 @@ KEYPAD_TRIGGERS = {
     255: "keypad_user" # Keypad with authenticated user (actual)
 }
 
+fingerprint_schema = {}
+for i in range(1, 21):  # 1 to 20
+    fingerprint_schema[vol.Optional(f"source_{i}")] = cv.string
+
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_API_KEY): cv.string,
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): cv.time_period,
-    vol.Optional("fingerprint_users", default={}): vol.Schema({
-        vol.Optional("source_1"): cv.string,
-        vol.Optional("source_2"): cv.string,
-        vol.Optional("source_3"): cv.string,
-        vol.Optional("source_4"): cv.string,
-        vol.Optional("source_5"): cv.string,
-    }),
+    vol.Optional("fingerprint_users", default={}): vol.Schema(fingerprint_schema),
     vol.Optional("fingerprint_detection_window", default=120): cv.positive_int,
     vol.Optional("enable_enhanced_logging", default=False): cv.boolean,
 })
