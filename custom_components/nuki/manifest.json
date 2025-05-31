@@ -1,0 +1,16 @@
+{
+  "domain": "nuki",
+  "name": "Nuki Smart Lock API",
+  "version": "0.1.00001",
+  "documentation": "https://github.com/joshburkard/nuki-ha",
+  "issue_tracker": "https://github.com/joshburkard/nuki-ha/issues",
+  "dependencies": [],
+  "config_flow": false,
+  "codeowners": ["@joshburkard"],
+  "requirements": [
+    "aiohttp>=3.8.0",
+    "async-timeout>=4.0.0"
+  ],
+  "iot_class": "cloud_polling",
+  "integration_type": "hub"
+}
