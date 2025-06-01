@@ -19,93 +19,31 @@ this features are already integrated:
     - access by PinCode
     - access by FingerPrint
 
-## Setup
+# Getting Your API Token
+
+1. Visit Nuki Web
+2. Log in with your Nuki account
+3. Go to the "API" or "Manage API" section
+4. Generate a new API token
+5. Copy the token to your configuration
+
+# Setup
 
 Recommended to be installed via [HACS](https://github.com/hacs/integration)
 
-1. Go to HACS -> Integrations
-2. [Add this repo to your HACS custom repositories](https://hacs.xyz/docs/faq/custom_repositories)
-3. Search for "NUKI Smart Lock API" and install.
-4. Add the configuration as documented below.
-5. Restart Home Assistant
-
-# Configuration
-
-## Basic Configuration
-```yaml
-# configuration.yaml
-lock:
-  - platform: nuki
-    api_key: "your_nuki_api_token_here"
-    name: "Front Door"  # Optional, defaults to lock name from Nuki
-    scan_interval: 30   # Optional, defaults to 30 seconds
-```
-
-## Advanced Configuration with Fingerprint User Mapping
-
-```yaml
-# configuration.yaml
-lock:
-  - platform: nuki
-    api_key: "your_nuki_api_token_here"
-    name: "Front Door"
-    scan_interval: 30
-    
-    # Configure fingerprint user mapping (optional)
-    fingerprint_users:
-      source_1: "Alice"      # User typically using keypad source 1
-      source_2: "Bob"        # User typically using keypad source 2
-      source_3: "Charlie"    # Add more sources as needed
-      # source_4: "David"
-      # source_5: "Eve"
-    
-    # Time window for detecting recent keypad actions (optional)
-    fingerprint_detection_window: 120  # seconds, defaults to 120 (2 minutes)
-    
-    # Enable detailed logging for debugging (optional)
-    enable_enhanced_logging: false     # defaults to false
-```
-
-## Configuration Options
-
-### Required Parameters
-
-| Parameter | Type | Description |
-| --- | --- | --- |
-| api_key | string | Your Nuki Web API token (get from Nuki Web) | 
-
-### Optional Parameters
-
-| Parameter | Type | Default | Description |
-| --- | --- | --- | --- |
-| name | string | Lock name from API | Prefix for the lock entity name | 
-| scan_interval | time | 30 seconds | How often to check for lock state updates |
-| fingerprint_users | dict | {} | Map keypad sources to user names for fingerprint detection |
-| fingerprint_detection_window | int | 120 | Time window in seconds to detect recent keypad actions |
-| enable_enhanced_logging | bool | false | Enable detailed debug logging |
-
-## Fingerprint User Mapping
-The fingerprint_users configuration helps the integration identify which user triggered a fingerprint unlock. When someone uses their fingerprint, the Nuki API typically logs it as "Nuki Keypad" without specific user identification.
-
-### How to Configure Fingerprint Users
-
-1. Monitor your logs with enable_enhanced_logging: true temporarily
-2. Have each family member use their fingerprint and note the source number in the logs
-3. Map each source to the corresponding user:
-
-```yaml
-fingerprint_users:
-  source_1: "Mom"        # Mom's fingerprint shows up as source 1
-  source_2: "Dad"        # Dad's fingerprint shows up as source 2
-  source_3: "Teenager"   # Teen's fingerprint shows up as source 3
-```
-
-### Alternative Detection Methods
-If you don't configure fingerprint_users, the integration will still try to identify users by:
-
-Auth ID matching: Looking for recent PIN entries with the same authentication ID
-Recent activity analysis: Analyzing who recently used each keypad source
-Frequency analysis: Identifying the most frequent recent user
+1. open your [Home Assistant](https://www.home-assistant.io/) instance
+2. Go to [HACS](https://hacs.xyz)
+3. click on the 3 dots top right and select `Custom Repositories`
+4. type in repository `https://github.com/joshburkard/NUKI-HA`
+5. select the Type `Integration` and click `ADD`
+6. Search for `Nuki Smart Lock API`
+7. click on the 3 dots on the `Nuki Smart Lock API` row and select `Download`
+8. Restart [Home Assistant](https://www.home-assistant.io/)
+9. Go to `Settings` --> `Devices & Services`
+10. Click to `Add Integration`
+11. Search for `Nuki Smart Lock API`
+12. Enter the API key, you created in the previous step and click to `Submit`.
+13. use it
 
 # Event Data
 
@@ -248,13 +186,7 @@ lock:
     - Check that your Nuki Bridge is online
     - Ensure Home Assistant can reach the internet
 
-# Getting Your API Token
 
-1. Visit Nuki Web
-2. Log in with your Nuki account
-3. Go to the "API" or "Manage API" section
-4. Generate a new API token
-5. Copy the token to your configuration
 
 # Services
 

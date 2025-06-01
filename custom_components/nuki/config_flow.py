@@ -39,28 +39,13 @@ class NukiConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if await api.test_connection():
                     smartlocks = await api.get_smartlocks()
                     if smartlocks:
-                        # Also test keypad discovery
-                        keypad_count = 0
-                        for smartlock in smartlocks:
-                            try:
-                                keypads = await api.get_smartlock_auth(smartlock["smartlockId"])
-                                if keypads:
-                                    keypad_count += len([k for k in keypads if k.get("type") == 13])
-                            except:
-                                pass  # Non-critical, keypads are optional
-                        
                         # Create a unique ID based on the first smartlock
                         await self.async_set_unique_id(f"nuki_{smartlocks[0]['smartlockId']}")
                         self._abort_if_unique_id_configured()
                         
                         title = user_input.get(CONF_NAME, "Nuki Smart Lock")
                         if len(smartlocks) > 1:
-                            title = f"Nuki ({len(smartlocks)} locks"
-                            if keypad_count > 0:
-                                title += f", {keypad_count} keypads"
-                            title += ")"
-                        elif keypad_count > 0:
-                            title += f" (+{keypad_count} keypad{'s' if keypad_count > 1 else ''})"
+                            title = f"Nuki ({len(smartlocks)} locks)"
                         
                         return self.async_create_entry(
                             title=title,

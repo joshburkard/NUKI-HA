@@ -1,7 +1,7 @@
 {
   "domain": "nuki",
   "name": "Nuki Smart Lock API",
-  "version": "0.1.00003",
+  "version": "0.1.00004",
   "documentation": "https://github.com/joshburkard/nuki-ha",
   "issue_tracker": "https://github.com/joshburkard/nuki-ha/issues",
   "dependencies": [],
