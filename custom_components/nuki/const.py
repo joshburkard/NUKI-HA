@@ -7,7 +7,7 @@ from homeassistant.components.lock import LockState
 DOMAIN = "nuki"
 
 # Platforms
-PLATFORMS = [Platform.LOCK, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON]
+PLATFORMS = [Platform.LOCK, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SWITCH, Platform.NUMBER, Platform.SELECT]
 
 # Default values
 DEFAULT_NAME = "Nuki Smart Lock"

@@ -201,6 +201,16 @@ class NukiAPI:
         }
         self._base_url = NUKI_API_BASE
     
+    async def update_smartlock_advanced_config(self, smartlock_id: int, config: Dict) -> Dict:
+        """Update smartlock advanced configuration."""
+        endpoint = f"/smartlock/{smartlock_id}/advanced/config"
+        return await self._request("POST", endpoint, config)
+
+    async def update_smartlock_config(self, smartlock_id: int, config: Dict) -> Dict:
+        """Update smartlock configuration."""
+        endpoint = f"/smartlock/{smartlock_id}/config"
+        return await self._request("POST", endpoint, config)
+        
     async def get_smartlock_full_data(self, smartlock_id: int) -> Dict:
         """Get complete smartlock data including config and advanced config."""
         try:

@@ -99,14 +99,7 @@ async def async_setup_entry(
             )
         )
         
-        entities.append(
-            NukiLEDBrightnessSensor(
-                api=api,
-                smartlock_id=smartlock_id,
-                smartlock_name=smartlock_name,
-                config_entry=config_entry,
-            )
-        )
+        # LED Brightness sensor removed - use number entity instead
         
         entities.append(
             NukiLockModeSensor(
@@ -117,6 +110,15 @@ async def async_setup_entry(
             )
         )
         
+        # Add new information sensors
+        entities.append(
+            NukiBatteryTypeSensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
         # Check if keypad is paired - we'll create a binary sensor instead of percentage sensor
         config = smartlock.get("config", {})
         keypad_paired = config.get("keypadPaired", False) or config.get("keypad2Paired", False)
@@ -1245,3 +1247,97 @@ class NukiLockModeSensor(SensorEntity):
             return "mdi:lock"
         else:
             return "mdi:help-circle"
+
+
+class NukiBatteryTypeSensor(SensorEntity):
+    """Read-only sensor showing battery type configuration."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the battery type sensor."""
+        self._api = api
+        self._smartlock_id = smartlock_id
+        self._smartlock_name = smartlock_name
+        self._config_entry = config_entry
+        
+        self._attr_name = f"{smartlock_name} Battery Type"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_battery_type"
+        
+        self._attr_native_value = None
+        self._attr_available = True
+        self._raw_battery_type = None
+        self._auto_detection_enabled = None
+        self._last_update = None
+    
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._smartlock_id))},
+            name=self._smartlock_name,
+            manufacturer="Nuki",
+            model="Smart Lock Ultra" if "Ultra" in self._smartlock_name else "Smart Lock",
+        )
+    
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional state attributes."""
+        return {
+            "smartlock_id": self._smartlock_id,
+            "raw_battery_type": self._raw_battery_type,
+            "auto_detection_enabled": self._auto_detection_enabled,
+            "last_update": self._last_update,
+            "note": "This is read-only for safety. Change battery type via Nuki app if needed.",
+        }
+    
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        try:
+            data = await self._api.get_smartlock_full_data(self._smartlock_id)
+            advanced_config = data.get("advancedConfig", {})
+            
+            self._raw_battery_type = advanced_config.get("batteryType", 0)
+            self._auto_detection_enabled = advanced_config.get("automaticBatteryTypeDetection", True)
+            
+            # Map battery type values to readable strings (expanded mapping)
+            battery_type_mapping = {
+                0: "Alkali",
+                1: "Accumulator", 
+                2: "Lithium",
+                3: "Lithium AA",
+                4: "Rechargeable",
+                5: "Automatic"  # Based on your feedback - type 5 seems to be automatic detection
+            }
+            
+            battery_type_name = battery_type_mapping.get(self._raw_battery_type, f"Unknown ({self._raw_battery_type})")
+            
+            # Show if auto-detection is enabled
+            if self._auto_detection_enabled:
+                self._attr_native_value = f"{battery_type_name} (Auto-detected)"
+            else:
+                self._attr_native_value = battery_type_name
+            
+            self._attr_available = True
+            self._last_update = datetime.now().isoformat()
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Battery type sensor update: %s (raw: %s, auto: %s)", 
+                            self._attr_native_value, self._raw_battery_type, self._auto_detection_enabled)
+            
+        except Exception as ex:
+            _LOGGER.error("Error updating battery type sensor: %s", ex)
+            self._attr_available = False
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        if self._raw_battery_type == 2:  # Lithium
+            return "mdi:battery-high"
+        elif self._raw_battery_type == 1:  # Accumulator
+            return "mdi:battery-charging"
+        else:  # Alkali
+            return "mdi:battery"
