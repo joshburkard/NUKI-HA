@@ -80,6 +80,43 @@ async def async_setup_entry(
             )
         )
         
+        # Add new configuration sensors
+        entities.append(
+            NukiAutoLockTimeoutSensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
+        entities.append(
+            NukiFirmwareVersionSensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
+        entities.append(
+            NukiLEDBrightnessSensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
+        entities.append(
+            NukiLockModeSensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
         # Check if keypad is paired - we'll create a binary sensor instead of percentage sensor
         config = smartlock.get("config", {})
         keypad_paired = config.get("keypadPaired", False) or config.get("keypad2Paired", False)
@@ -152,11 +189,16 @@ class NukiBaseBatterySensor(SensorEntity):
         }
         return attrs
     
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
     async def async_update(self) -> None:
         """Update the sensor state."""
         try:
             # Get smartlock data
-            data = await self._api.get_smartlock_state(self._smartlock_id)
+            data = await self._api.get_smartlock_full_data(self._smartlock_id)
             self._update_from_smartlock_data(data)
             
             self._attr_available = True
@@ -169,11 +211,6 @@ class NukiBaseBatterySensor(SensorEntity):
         except Exception as ex:
             _LOGGER.error("Error updating battery sensor %s: %s", self._attr_name, ex)
             self._attr_available = False
-    
-    @property 
-    def _enhanced_logging(self) -> bool:
-        """Check if enhanced logging is enabled."""
-        return self._config_entry.options.get("enable_enhanced_logging", False)
     
     def _update_from_smartlock_data(self, data: Dict) -> None:
         """Update sensor from smartlock API data - to be implemented by subclasses."""
@@ -303,6 +340,11 @@ class NukiLastAccessTimeSensor(SensorEntity):
             "last_update": self._last_update,
         }
     
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
     async def async_update(self) -> None:
         """Update the sensor state."""
         try:
@@ -358,11 +400,6 @@ class NukiLastAccessTimeSensor(SensorEntity):
             _LOGGER.error("Error finding last keypad access time: %s", ex)
             return None
     
-    def _is_keypad_action(self, trigger: int, user_name: str, action: int) -> bool:
-        """Determine if this log entry represents a keypad action."""
-        # Updated based on API docs: trigger 255 = keypad
-        return trigger == 255
-    
     def _parse_timestamp(self, log_date: str) -> datetime:
         """Parse log timestamp to datetime object."""
         try:
@@ -376,11 +413,6 @@ class NukiLastAccessTimeSensor(SensorEntity):
         except Exception as ex:
             _LOGGER.error("Error parsing timestamp '%s': %s", log_date, ex)
             return None
-    
-    @property 
-    def _enhanced_logging(self) -> bool:
-        """Check if enhanced logging is enabled."""
-        return self._config_entry.options.get("enable_enhanced_logging", False)
     
     @property
     def icon(self) -> str:
@@ -435,6 +467,11 @@ class NukiLastAccessUserSensor(SensorEntity):
             attrs["access_state_text"] = self._get_state_description(self._access_state)
         return attrs
     
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
     async def async_update(self) -> None:
         """Update the sensor state."""
         try:
@@ -539,9 +576,7 @@ class NukiLastAccessUserSensor(SensorEntity):
             return None
     
     def _determine_fingerprint_user_advanced(self, logs: list, current_index: int, source: int, auth_id: str, fingerprint_users: dict) -> str:
-        """
-        Advanced fingerprint user determination with multiple fallback methods.
-        """
+        """Advanced fingerprint user determination with multiple fallback methods."""
         try:
             if self._enhanced_logging:
                 _LOGGER.debug("Advanced fingerprint user detection for auth_id: %s, source: %s", 
@@ -683,154 +718,6 @@ class NukiLastAccessUserSensor(SensorEntity):
                 _LOGGER.debug("Error finding recent fingerprint user: %s", ex)
         
         return None
-
-    def _is_keypad_action(self, trigger: int, user_name: str, action: int) -> bool:
-        """Determine if this log entry represents a keypad action."""
-        # Updated based on API docs: trigger 255 = keypad
-        return trigger == 255
-    
-    def _determine_fingerprint_user(self, logs: list, current_index: int, source: int, auth_id: str, fingerprint_users: dict) -> str:
-        """
-        Determine the actual user for fingerprint access using multiple methods.
-        Priority: 1) Recent PIN by same auth_id, 2) Manual config, 3) Recent activity, 4) Fallback
-        """
-        try:
-            if self._enhanced_logging:
-                _LOGGER.debug("Determining fingerprint user for auth_id: %s, source: %s", 
-                            auth_id[-8:] if auth_id else "None", source)
-            
-            # Method 1: Look for a recent PIN entry by the same auth_id (MOST RELIABLE)
-            auth_id_window = min(20, len(logs))  # Look at more entries for auth_id matching
-            for i in range(max(0, current_index - auth_id_window), min(len(logs), current_index + 5)):
-                if i == current_index:
-                    continue
-                    
-                entry = logs[i]
-                entry_auth_id = entry.get("authId", "")
-                entry_name = entry.get("name", "")
-                entry_source = entry.get("source", 0)
-                entry_trigger = entry.get("trigger", 0)
-                entry_date = entry.get("date", "")
-                
-                # Look for PIN entries (source 1) with same auth_id
-                if (entry_auth_id and entry_auth_id == auth_id and 
-                    entry_source == 1 and entry_trigger == 255 and  # PIN code entry
-                    entry_name and entry_name != "Unknown" and "Nuki Web" not in entry_name):
-                    
-                    if self._enhanced_logging:
-                        _LOGGER.debug("Found fingerprint user via auth_id match: %s (from PIN entry: %s)", 
-                                    entry_name, entry_date)
-                    return entry_name
-            
-            # Method 2: Use configured source mapping
-            source_key = f"source_{source}"
-            if source_key in fingerprint_users and fingerprint_users[source_key]:
-                configured_user = fingerprint_users[source_key]
-                if self._enhanced_logging:
-                    _LOGGER.debug("Found fingerprint user via configured mapping: %s for source %s", 
-                                configured_user, source)
-                return configured_user
-            
-            # Method 3: Dynamic source mapping based on recent activity
-            source_activity = self._analyze_recent_source_activity(logs, source)
-            if source_activity:
-                if self._enhanced_logging:
-                    _LOGGER.debug("Found fingerprint user via recent activity analysis: %s", source_activity)
-                return source_activity
-            
-            # Method 4: Look at the most frequent recent user (fallback)
-            frequent_user = self._get_most_frequent_recent_user(logs)
-            if frequent_user:
-                if self._enhanced_logging:
-                    _LOGGER.debug("Found fingerprint user via frequency analysis: %s", frequent_user)
-                return frequent_user
-            
-            # Fallback: Return descriptive name
-            fallback_name = f"Fingerprint User (Source {source})"
-            if auth_id and len(auth_id) > 8:
-                fallback_name += f" [{auth_id[-8:]}]"
-            
-            if self._enhanced_logging:
-                _LOGGER.debug("Using fallback fingerprint user: %s", fallback_name)
-            return fallback_name
-            
-        except Exception as ex:
-            _LOGGER.error("Error determining fingerprint user: %s", ex)
-            return "Unknown Fingerprint User"
-
-    def _analyze_recent_source_activity(self, logs: list, target_source: int) -> str:
-        """Analyze recent activity to determine likely user for a source."""
-        try:
-            # Look at recent PIN entries (source 1) from the same physical source/device
-            recent_entries = logs[:15]  # Last 15 entries
-            source_users = []
-            
-            for entry in recent_entries:
-                entry_source = entry.get("source", 0)
-                entry_name = entry.get("name", "")
-                entry_trigger = entry.get("trigger", 0)
-                
-                # Look for PIN codes (source 1) from same trigger (keypad)
-                if (entry_trigger == 255 and entry_source == 1 and  # PIN code entry
-                    entry_name and entry_name != "Unknown" and "Nuki Web" not in entry_name):
-                    source_users.append(entry_name)
-            
-            if source_users:
-                # Return the most recent user for PIN codes
-                return source_users[0]
-                
-        except Exception as ex:
-            if self._enhanced_logging:
-                _LOGGER.debug("Error in source activity analysis: %s", ex)
-        
-        return None
-
-    def _get_most_frequent_recent_user(self, logs: list) -> str:
-        """Get the most frequent recent user as a last resort."""
-        try:
-            recent_users = []
-            recent_entries = logs[:20]  # Last 20 entries
-            
-            for entry in recent_entries:
-                user = entry.get("name", "")
-                trigger = entry.get("trigger", 0)
-                source = entry.get("source", 0)
-                
-                # Only consider keypad PIN entries
-                if (trigger == 255 and source == 1 and  # PIN code entry
-                    user and user != "Unknown" and "Nuki Web" not in user):
-                    recent_users.append(user)
-            
-            if recent_users:
-                # Count frequency and return most common
-                from collections import Counter
-                user_counts = Counter(recent_users)
-                most_frequent = user_counts.most_common(1)[0][0]
-                return most_frequent
-                
-        except Exception as ex:
-            if self._enhanced_logging:
-                _LOGGER.debug("Error in frequency analysis: %s", ex)
-        
-        return None
-    
-    @property 
-    def _enhanced_logging(self) -> bool:
-        """Check if enhanced logging is enabled."""
-        return self._config_entry.options.get("enable_enhanced_logging", False)
-    
-    @property
-    def icon(self) -> str:
-        """Return the icon for the sensor."""
-        # Check if this was a failed access attempt
-        if hasattr(self, '_access_state') and self._access_state in [224, 225]:
-            return "mdi:account-alert"
-        elif self._access_method == "fingerprint":
-            return "mdi:fingerprint"
-        elif self._access_method == "pin_code":
-            return "mdi:numeric"
-        else:
-            return "mdi:account"
     
     def _get_state_description(self, state: int) -> str:
         """Get human readable description of the state."""
@@ -849,6 +736,19 @@ class NukiLastAccessUserSensor(SensorEntity):
             255: "Undefined"
         }
         return state_descriptions.get(state, f"Unknown State ({state})")
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        # Check if this was a failed access attempt
+        if hasattr(self, '_access_state') and self._access_state in [224, 225]:
+            return "mdi:account-alert"
+        elif self._access_method == "fingerprint":
+            return "mdi:fingerprint"
+        elif self._access_method == "pin_code":
+            return "mdi:numeric"
+        else:
+            return "mdi:account"
 
 
 class NukiLastAccessMethodSensor(SensorEntity):
@@ -900,6 +800,11 @@ class NukiLastAccessMethodSensor(SensorEntity):
             attrs["state_text"] = self._get_state_description(self._method_state)
         return attrs
     
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
     async def async_update(self) -> None:
         """Update the sensor state."""
         try:
@@ -986,29 +891,6 @@ class NukiLastAccessMethodSensor(SensorEntity):
             _LOGGER.error("Error finding last keypad access method: %s", ex)
             return None
     
-    def _is_keypad_action(self, trigger: int, user_name: str, action: int) -> bool:
-        """Determine if this log entry represents a keypad action."""
-        # Updated based on API docs: trigger 255 = keypad
-        return trigger == 255
-    
-    @property 
-    def _enhanced_logging(self) -> bool:
-        """Check if enhanced logging is enabled."""
-        return self._config_entry.options.get("enable_enhanced_logging", False)
-    
-    @property
-    def icon(self) -> str:
-        """Return the icon for the sensor."""
-        # Check if this was a failed access attempt
-        if hasattr(self, '_method_state') and self._method_state in [224, 225]:
-            return "mdi:alert-circle"
-        elif self._attr_native_value and "Fingerprint" in self._attr_native_value:
-            return "mdi:fingerprint"
-        elif self._attr_native_value and "PIN Code" in self._attr_native_value:
-            return "mdi:numeric"
-        else:
-            return "mdi:help-circle"
-    
     def _get_state_description(self, state: int) -> str:
         """Get human readable description of the state."""
         state_descriptions = {
@@ -1026,3 +908,340 @@ class NukiLastAccessMethodSensor(SensorEntity):
             255: "Undefined"
         }
         return state_descriptions.get(state, f"Unknown State ({state})")
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        # Check if this was a failed access attempt
+        if hasattr(self, '_method_state') and self._method_state in [224, 225]:
+            return "mdi:alert-circle"
+        elif self._attr_native_value and "Fingerprint" in self._attr_native_value:
+            return "mdi:fingerprint"
+        elif self._attr_native_value and "PIN Code" in self._attr_native_value:
+            return "mdi:numeric"
+        else:
+            return "mdi:help-circle"
+
+
+class NukiAutoLockTimeoutSensor(SensorEntity):
+    """Sensor showing auto lock timeout in seconds."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the auto lock timeout sensor."""
+        self._api = api
+        self._smartlock_id = smartlock_id
+        self._smartlock_name = smartlock_name
+        self._config_entry = config_entry
+        
+        self._attr_name = f"{smartlock_name} Auto Lock Timeout"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_auto_lock_timeout"
+        self._attr_native_unit_of_measurement = "s"
+        self._attr_device_class = SensorDeviceClass.DURATION
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        
+        self._attr_native_value = None
+        self._attr_available = True
+        self._auto_lock_enabled = None
+    
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._smartlock_id))},
+            name=self._smartlock_name,
+            manufacturer="Nuki",
+            model="Smart Lock Ultra" if "Ultra" in self._smartlock_name else "Smart Lock",
+        )
+    
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional state attributes."""
+        return {
+            "smartlock_id": self._smartlock_id,
+            "auto_lock_enabled": self._auto_lock_enabled,
+            "timeout_minutes": self._attr_native_value / 60 if self._attr_native_value else None,
+        }
+    
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        try:
+            data = await self._api.get_smartlock_full_data(self._smartlock_id)
+            
+            advanced_config = data.get("advancedConfig", {})
+            self._auto_lock_enabled = advanced_config.get("autoLock", False)
+            
+            if self._auto_lock_enabled:
+                self._attr_native_value = advanced_config.get("autoLockTimeout", 0)
+            else:
+                self._attr_native_value = None
+                
+            self._attr_available = True
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Auto lock timeout update: enabled=%s, timeout=%s", 
+                            self._auto_lock_enabled, self._attr_native_value)
+            
+        except Exception as ex:
+            _LOGGER.error("Error updating auto lock timeout sensor: %s", ex)
+            self._attr_available = False
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        if self._auto_lock_enabled:
+            return "mdi:timer-lock"
+        else:
+            return "mdi:timer-lock-outline"
+
+
+class NukiFirmwareVersionSensor(SensorEntity):
+    """Sensor showing firmware version."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the firmware version sensor."""
+        self._api = api
+        self._smartlock_id = smartlock_id
+        self._smartlock_name = smartlock_name
+        self._config_entry = config_entry
+        
+        self._attr_name = f"{smartlock_name} Firmware Version"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_firmware_version"
+        
+        self._attr_native_value = None
+        self._attr_available = True
+        self._raw_version = None
+        self._hardware_version = None
+    
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._smartlock_id))},
+            name=self._smartlock_name,
+            manufacturer="Nuki",
+            model="Smart Lock Ultra" if "Ultra" in self._smartlock_name else "Smart Lock",
+        )
+    
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional state attributes."""
+        return {
+            "smartlock_id": self._smartlock_id,
+            "raw_firmware_version": self._raw_version,
+            "hardware_version": self._hardware_version,
+        }
+    
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        try:
+            data = await self._api.get_smartlock_full_data(self._smartlock_id)
+            
+            self._raw_version = data.get("firmwareVersion")
+            self._hardware_version = data.get("hardwareVersion")
+            
+            if self._raw_version:
+                self._attr_native_value = self._format_firmware_version(self._raw_version)
+            else:
+                self._attr_native_value = "Unknown"
+                
+            self._attr_available = True
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Firmware version update: raw=%s, formatted=%s", 
+                            self._raw_version, self._attr_native_value)
+            
+        except Exception as ex:
+            _LOGGER.error("Error updating firmware version sensor: %s", ex)
+            self._attr_available = False
+    
+    def _format_firmware_version(self, raw_version: int) -> str:
+        """Convert raw firmware version to readable format."""
+        try:
+            # Based on Nuki firmware version format
+            # Example: 328455 might be version 3.2.8455 or similar
+            version_str = str(raw_version)
+            if len(version_str) >= 6:
+                major = version_str[0]
+                minor = version_str[1:3].lstrip('0') or '0'
+                build = version_str[3:]
+                return f"{major}.{minor}.{build}"
+            else:
+                return f"1.0.{raw_version}"
+        except:
+            return str(raw_version)
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        return "mdi:chip"
+
+
+class NukiLEDBrightnessSensor(SensorEntity):
+    """Sensor showing LED brightness level."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the LED brightness sensor."""
+        self._api = api
+        self._smartlock_id = smartlock_id
+        self._smartlock_name = smartlock_name
+        self._config_entry = config_entry
+        
+        self._attr_name = f"{smartlock_name} LED Brightness"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_led_brightness"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        
+        self._attr_native_value = None
+        self._attr_available = True
+        self._led_enabled = None
+    
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._smartlock_id))},
+            name=self._smartlock_name,
+            manufacturer="Nuki",
+            model="Smart Lock Ultra" if "Ultra" in self._smartlock_name else "Smart Lock",
+        )
+    
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional state attributes."""
+        return {
+            "smartlock_id": self._smartlock_id,
+            "led_enabled": self._led_enabled,
+            "brightness_percentage": (self._attr_native_value * 20) if self._attr_native_value else None,
+        }
+    
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        try:
+            data = await self._api.get_smartlock_full_data(self._smartlock_id)
+            
+            config = data.get("config", {})
+            self._led_enabled = config.get("ledEnabled", False)
+            
+            if self._led_enabled:
+                self._attr_native_value = config.get("ledBrightness", 3)
+            else:
+                self._attr_native_value = 0
+                
+            self._attr_available = True
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("LED brightness update: enabled=%s, brightness=%s", 
+                            self._led_enabled, self._attr_native_value)
+            
+        except Exception as ex:
+            _LOGGER.error("Error updating LED brightness sensor: %s", ex)
+            self._attr_available = False
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        if self._led_enabled and self._attr_native_value and self._attr_native_value > 0:
+            if self._attr_native_value <= 1:
+                return "mdi:led-strip-variant"
+            elif self._attr_native_value <= 3:
+                return "mdi:led-strip"
+            else:
+                return "mdi:led-strip-variant"
+        else:
+            return "mdi:led-off"
+
+
+class NukiLockModeSensor(SensorEntity):
+    """Sensor showing current lock mode."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the lock mode sensor."""
+        self._api = api
+        self._smartlock_id = smartlock_id
+        self._smartlock_name = smartlock_name
+        self._config_entry = config_entry
+        
+        self._attr_name = f"{smartlock_name} Lock Mode"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_lock_mode"
+        
+        self._attr_native_value = None
+        self._attr_available = True
+        self._raw_mode = None
+    
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._smartlock_id))},
+            name=self._smartlock_name,
+            manufacturer="Nuki",
+            model="Smart Lock Ultra" if "Ultra" in self._smartlock_name else "Smart Lock",
+        )
+    
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional state attributes."""
+        return {
+            "smartlock_id": self._smartlock_id,
+            "raw_mode": self._raw_mode,
+        }
+    
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
+    async def async_update(self) -> None:
+        """Update the sensor state."""
+        try:
+            data = await self._api.get_smartlock_full_data(self._smartlock_id)
+            
+            state = data.get("state", {})
+            self._raw_mode = state.get("mode", 0)
+            
+            # Map mode values to readable strings
+            mode_mapping = {
+                0: "Maintenance",
+                1: "Door Mode", 
+                2: "Continuous Mode",
+                3: "Always Locked",
+            }
+            
+            self._attr_native_value = mode_mapping.get(self._raw_mode, f"Unknown ({self._raw_mode})")
+            self._attr_available = True
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Lock mode update: raw=%s, mapped=%s", 
+                            self._raw_mode, self._attr_native_value)
+            
+        except Exception as ex:
+            _LOGGER.error("Error updating lock mode sensor: %s", ex)
+            self._attr_available = False
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        if self._raw_mode == 0:
+            return "mdi:wrench"
+        elif self._raw_mode == 1:
+            return "mdi:door"
+        elif self._raw_mode == 2:
+            return "mdi:refresh"
+        elif self._raw_mode == 3:
+            return "mdi:lock"
+        else:
+            return "mdi:help-circle"

@@ -99,6 +99,52 @@ async def async_setup_entry(
         else:
             _LOGGER.debug("No door sensor available for lock %s (doorState: 0 - unavailable)", 
                          smartlock_name)
+        
+        # Add new binary sensors
+        entities.append(
+            NukiAutoLockBinarySensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
+        entities.append(
+            NukiBatteryChargingBinarySensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
+        entities.append(
+            NukiNightModeBinarySensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
+        entities.append(
+            NukiWiFiEnabledBinarySensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
+        
+        entities.append(
+            NukiAutoUnlatchBinarySensor(
+                api=api,
+                smartlock_id=smartlock_id,
+                smartlock_name=smartlock_name,
+                config_entry=config_entry,
+            )
+        )
     
     if entities:
         async_add_entities(entities, True)
@@ -150,11 +196,16 @@ class NukiBinaryBaseSensor(BinarySensorEntity):
         }
         return attrs
     
+    @property 
+    def _enhanced_logging(self) -> bool:
+        """Check if enhanced logging is enabled."""
+        return self._config_entry.options.get("enable_enhanced_logging", False)
+
     async def async_update(self) -> None:
         """Update the sensor state."""
         try:
-            # Get smartlock data
-            data = await self._api.get_smartlock_state(self._smartlock_id)
+            # Get full smartlock data including config
+            data = await self._api.get_smartlock_full_data(self._smartlock_id)
             self._update_from_smartlock_data(data)
             
             self._attr_available = True
@@ -271,11 +322,6 @@ class NukiDoorStateSensor(NukiBinaryBaseSensor):
             }.get(self._door_state_value, f"unknown({self._door_state_value})")
         return attrs
     
-    @property 
-    def _enhanced_logging(self) -> bool:
-        """Check if enhanced logging is enabled."""
-        return self._config_entry.options.get("enable_enhanced_logging", False)
-    
     @property
     def icon(self) -> str:
         """Return the icon for the sensor."""
@@ -315,11 +361,6 @@ class NukiKeypadBatteryBinarySensor(NukiBinaryBaseSensor):
         except Exception as ex:
             _LOGGER.error("Error parsing keypad battery data: %s", ex)
             self._attr_is_on = None
-    
-    @property 
-    def _enhanced_logging(self) -> bool:
-        """Check if enhanced logging is enabled."""
-        return self._config_entry.options.get("enable_enhanced_logging", False)
     
     @property
     def icon(self) -> str:
@@ -361,11 +402,6 @@ class NukiDoorSensorBatteryBinarySensor(NukiBinaryBaseSensor):
             _LOGGER.error("Error parsing door sensor battery data: %s", ex)
             self._attr_is_on = None
     
-    @property 
-    def _enhanced_logging(self) -> bool:
-        """Check if enhanced logging is enabled."""
-        return self._config_entry.options.get("enable_enhanced_logging", False)
-    
     @property
     def icon(self) -> str:
         """Return the icon for the sensor."""
@@ -375,3 +411,175 @@ class NukiDoorSensorBatteryBinarySensor(NukiBinaryBaseSensor):
             return "mdi:battery"
         else:
             return "mdi:battery-unknown"
+
+
+class NukiAutoLockBinarySensor(NukiBinaryBaseSensor):
+    """Binary sensor showing if auto lock is enabled."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the auto lock binary sensor."""
+        super().__init__(api, smartlock_id, smartlock_name, config_entry, "auto_lock")
+        
+        self._attr_name = f"{smartlock_name} Auto Lock"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_auto_lock"
+        self._timeout = None
+    
+    def _update_from_smartlock_data(self, data: Dict) -> None:
+        """Update sensor from smartlock API data."""
+        try:
+            advanced_config = data.get("advancedConfig", {})
+            self._attr_is_on = bool(advanced_config.get("autoLock", False))
+            self._timeout = advanced_config.get("autoLockTimeout", 0)
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Auto lock binary update: enabled=%s, timeout=%s seconds", 
+                            self._attr_is_on, self._timeout)
+                        
+        except Exception as ex:
+            _LOGGER.error("Error parsing auto lock data: %s", ex)
+            self._attr_is_on = None
+    
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional state attributes."""
+        attrs = super().extra_state_attributes
+        if self._timeout is not None:
+            attrs["timeout_seconds"] = self._timeout
+            attrs["timeout_minutes"] = self._timeout / 60
+        return attrs
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        return "mdi:timer-lock" if self._attr_is_on else "mdi:timer-lock-outline"
+
+
+class NukiBatteryChargingBinarySensor(NukiBinaryBaseSensor):
+    """Binary sensor showing if battery is charging."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the battery charging binary sensor."""
+        super().__init__(api, smartlock_id, smartlock_name, config_entry, "battery_charging")
+        
+        self._attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+        self._attr_name = f"{smartlock_name} Battery Charging"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_battery_charging"
+    
+    def _update_from_smartlock_data(self, data: Dict) -> None:
+        """Update sensor from smartlock API data."""
+        try:
+            state = data.get("state", {})
+            self._attr_is_on = bool(state.get("batteryCharging", False))
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Battery charging binary update: %s", self._attr_is_on)
+                        
+        except Exception as ex:
+            _LOGGER.error("Error parsing battery charging data: %s", ex)
+            self._attr_is_on = None
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        return "mdi:battery-charging" if self._attr_is_on else "mdi:battery"
+
+
+class NukiNightModeBinarySensor(NukiBinaryBaseSensor):
+    """Binary sensor showing if night mode is active."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the night mode binary sensor."""
+        super().__init__(api, smartlock_id, smartlock_name, config_entry, "night_mode")
+        
+        self._attr_name = f"{smartlock_name} Night Mode"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_night_mode"
+    
+    def _update_from_smartlock_data(self, data: Dict) -> None:
+        """Update sensor from smartlock API data."""
+        try:
+            state = data.get("state", {})
+            self._attr_is_on = bool(state.get("nightMode", False))
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Night mode binary update: %s", self._attr_is_on)
+                        
+        except Exception as ex:
+            _LOGGER.error("Error parsing night mode data: %s", ex)
+            self._attr_is_on = None
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        return "mdi:weather-night" if self._attr_is_on else "mdi:weather-sunny"
+
+
+class NukiWiFiEnabledBinarySensor(NukiBinaryBaseSensor):
+    """Binary sensor showing if WiFi is enabled."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the WiFi enabled binary sensor."""
+        super().__init__(api, smartlock_id, smartlock_name, config_entry, "wifi_enabled")
+        
+        self._attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+        self._attr_name = f"{smartlock_name} WiFi Enabled"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_wifi_enabled"
+    
+    def _update_from_smartlock_data(self, data: Dict) -> None:
+        """Update sensor from smartlock API data."""
+        try:
+            config = data.get("config", {})
+            self._attr_is_on = bool(config.get("wifiEnabled", False))
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("WiFi enabled binary update: %s", self._attr_is_on)
+                        
+        except Exception as ex:
+            _LOGGER.error("Error parsing WiFi enabled data: %s", ex)
+            self._attr_is_on = None
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        return "mdi:wifi" if self._attr_is_on else "mdi:wifi-off"
+
+
+class NukiAutoUnlatchBinarySensor(NukiBinaryBaseSensor):
+    """Binary sensor showing if auto unlatch is enabled."""
+    
+    def __init__(self, api, smartlock_id: int, smartlock_name: str, config_entry: ConfigEntry):
+        """Initialize the auto unlatch binary sensor."""
+        super().__init__(api, smartlock_id, smartlock_name, config_entry, "auto_unlatch")
+        
+        self._attr_name = f"{smartlock_name} Auto Unlatch"
+        self._attr_unique_id = f"nuki_smartlock_{smartlock_id}_auto_unlatch"
+        self._unlatch_duration = None
+    
+    def _update_from_smartlock_data(self, data: Dict) -> None:
+        """Update sensor from smartlock API data."""
+        try:
+            config = data.get("config", {})
+            self._attr_is_on = bool(config.get("autoUnlatch", False))
+            
+            advanced_config = data.get("advancedConfig", {})
+            self._unlatch_duration = advanced_config.get("unlatchDuration", 3)
+            
+            if self._enhanced_logging:
+                _LOGGER.debug("Auto unlatch binary update: enabled=%s, duration=%s seconds", 
+                            self._attr_is_on, self._unlatch_duration)
+                        
+        except Exception as ex:
+            _LOGGER.error("Error parsing auto unlatch data: %s", ex)
+            self._attr_is_on = None
+    
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional state attributes."""
+        attrs = super().extra_state_attributes
+        if self._unlatch_duration is not None:
+            attrs["unlatch_duration_seconds"] = self._unlatch_duration
+        return attrs
+    
+    @property
+    def icon(self) -> str:
+        """Return the icon for the sensor."""
+        return "mdi:door-open" if self._attr_is_on else "mdi:door-closed-lock"

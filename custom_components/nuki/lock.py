@@ -201,6 +201,26 @@ class NukiAPI:
         }
         self._base_url = NUKI_API_BASE
     
+    async def get_smartlock_full_data(self, smartlock_id: int) -> Dict:
+        """Get complete smartlock data including config and advanced config."""
+        try:
+            # Get the full smartlock list which includes all config data
+            smartlocks = await self.get_smartlocks()
+            
+            # Find the specific smartlock by ID
+            for smartlock in smartlocks:
+                if smartlock.get("smartlockId") == smartlock_id:
+                    return smartlock
+            
+            # If not found in list, fall back to individual endpoint
+            _LOGGER.warning("Smartlock %s not found in list, using individual endpoint", smartlock_id)
+            return await self.get_smartlock_state(smartlock_id)
+            
+        except Exception as ex:
+            _LOGGER.error("Error getting full smartlock data: %s", ex)
+            # Fall back to individual endpoint
+            return await self.get_smartlock_state(smartlock_id)
+
     async def _request(self, method: str, endpoint: str, data: Dict = None) -> Dict:
         """Make API request."""
         url = f"{self._base_url}{endpoint}"
