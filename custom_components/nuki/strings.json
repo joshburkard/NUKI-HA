@@ -1,0 +1,97 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Nuki Smart Lock Setup",
+                "description": "Enter your Nuki Web API token to connect your smart locks.",
+                "data": {
+                    "api_key": "API Token",
+                    "name": "Name (optional)",
+                    "scan_interval": "Scan Interval (seconds)"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to Nuki API. Please check your internet connection.",
+            "invalid_auth": "Invalid API token. Please check your token from Nuki Web.",
+            "no_smartlocks": "No smart locks found in your Nuki account.",
+            "unknown": "Unexpected error occurred."
+        },
+        "abort": {
+            "already_configured": "Smart lock is already configured."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Nuki Smart Lock Options",
+                "description": "Configure advanced options for your Nuki integration.",
+                "data": {
+                    "scan_interval": "Scan Interval (seconds)",
+                    "fingerprint_detection_window": "Fingerprint Detection Window (seconds)",
+                    "enable_enhanced_logging": "Enable Enhanced Logging"
+                }
+            }
+        }
+    },
+    "entity": {
+        "sensor": {
+            "battery": {
+                "name": "Battery"
+            },
+            "last_access_time": {
+                "name": "Last Access Time"
+            },
+            "last_access_user": {
+                "name": "Last Access User"
+            },
+            "last_access_method": {
+                "name": "Last Access Method"
+            }
+        },
+        "binary_sensor": {
+            "connection": {
+                "name": "Connection"
+            },
+            "keypad_battery": {
+                "name": "Keypad Battery"
+            },
+            "doorsensor_battery": {
+                "name": "Door Sensor Battery"
+            },
+            "door": {
+                "name": "Door"
+            }
+        },
+        "button": {
+            "unlatch": {
+                "name": "Unlatch"
+            },
+            "lock_n_go": {
+                "name": "Lock 'n' Go"
+            }
+        }
+    },
+    "services": {
+        "unlatch": {
+            "name": "Unlatch",
+            "description": "Unlatch the door (open without turning handle).",
+            "fields": {
+                "entity_id": {
+                    "name": "Entity",
+                    "description": "The Nuki lock to unlatch."
+                }
+            }
+        },
+        "lock_n_go": {
+            "name": "Lock 'n' Go",
+            "description": "Lock and Go (lock and auto-unlatch after delay).",
+            "fields": {
+                "entity_id": {
+                    "name": "Entity",
+                    "description": "The Nuki lock to lock and go."
+                }
+            }
+        }
+    }
+}

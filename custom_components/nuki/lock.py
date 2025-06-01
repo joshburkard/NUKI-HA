@@ -1,111 +1,138 @@
 """
-Nuki Smart Lock Ultra Home Assistant Integration
+Nuki Smart Lock Home Assistant Integration
 Supports lock control and keypad event detection
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import aiohttp
 import async_timeout
 import voluptuous as vol
-from homeassistant.components.lock import LockEntity, PLATFORM_SCHEMA
+    
+from homeassistant.components.lock import LockEntity, LockState, PLATFORM_SCHEMA
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_API_KEY,
-    CONF_HOST,
     CONF_NAME,
     CONF_SCAN_INTERVAL,
-    STATE_LOCKED,
-    STATE_UNLOCKED,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-import pytz
-from datetime import datetime, timezone
+from .const import (
+    DOMAIN,
+    DEFAULT_NAME,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_DETECTION_WINDOW,
+    NUKI_API_BASE,
+    NUKI_STATES,
+    NUKI_ACTIONS,
+    EVENT_KEYPAD_ACTION,
+    EVENT_MANUAL_ACTION,
+    CONF_FINGERPRINT_USERS,
+    CONF_FINGERPRINT_DETECTION_WINDOW,
+    CONF_ENABLE_ENHANCED_LOGGING,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-# Replace these constants at the top of your lock.py file
-
-DOMAIN = "nuki"
-DEFAULT_NAME = "Nuki Smart Lock"
-DEFAULT_SCAN_INTERVAL = timedelta(seconds=30)
-
-# Nuki API endpoints (corrected - no /manage prefix)
-NUKI_API_BASE = "https://api.nuki.io"
-
-# Nuki states
-NUKI_STATES = {
-    0: "uncalibrated",
-    1: STATE_LOCKED,
-    2: "unlocking", 
-    3: STATE_UNLOCKED,
-    4: "locking",
-    5: "unlatched",
-    6: "unlocked (lock 'n' go)",
-    7: "unlatching",
-    254: "motor blocked",
-    255: "undefined"
-}
-
-# Nuki lock actions
-NUKI_ACTIONS = {
-    "unlock": 1,
-    "lock": 2,
-    "unlatch": 3,
-    "lock_n_go": 4,
-    "lock_n_go_with_unlatch": 5
-}
-
 # Keypad trigger types
 KEYPAD_TRIGGERS = {
-    0: "web/api",      # Nuki Web actions
-    1: "manual",       # Manual operation
-    2: "button",       # Physical button
-    3: "automatic",    # Automatic/scheduled
-    4: "keypad",       # Keypad (original expectation - not used)
-    255: "keypad_user" # Keypad with authenticated user (actual)
+    0: "web/api",
+    1: "manual",
+    2: "button",
+    3: "automatic",
+    4: "keypad",
+    255: "keypad_user"
 }
 
+# Legacy YAML platform schema (for backward compatibility)
 fingerprint_schema = {}
 for i in range(1, 21):  # 1 to 20
-    fingerprint_schema[vol.Optional(f"source_{i}")] = cv.string
+    fingerprint_schema[f"source_{i}"] = cv.string
 
+# Create schema with voluptuous
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_API_KEY): cv.string,
     vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): cv.time_period,
-    vol.Optional("fingerprint_users", default={}): vol.Schema(fingerprint_schema),
-    vol.Optional("fingerprint_detection_window", default=120): cv.positive_int,
-    vol.Optional("enable_enhanced_logging", default=False): cv.boolean,
+    vol.Optional(CONF_FINGERPRINT_USERS, default={}): vol.Schema(fingerprint_schema),
+    vol.Optional(CONF_FINGERPRINT_DETECTION_WINDOW, default=DEFAULT_DETECTION_WINDOW): cv.positive_int,
+    vol.Optional(CONF_ENABLE_ENHANCED_LOGGING, default=False): cv.boolean,
 })
 
 
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Nuki lock from config entry."""
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    api = data["api"]
+    smartlocks = data["smartlocks"]
+    
+    # Get options from config entry
+    scan_interval = timedelta(seconds=config_entry.options.get(CONF_SCAN_INTERVAL, 30))
+    fingerprint_users = config_entry.options.get(CONF_FINGERPRINT_USERS, {})
+    detection_window = config_entry.options.get(CONF_FINGERPRINT_DETECTION_WINDOW, DEFAULT_DETECTION_WINDOW)
+    enhanced_logging = config_entry.options.get(CONF_ENABLE_ENHANCED_LOGGING, False)
+    
+    _LOGGER.info("Setting up %d Nuki lock(s)", len(smartlocks))
+    if enhanced_logging:
+        _LOGGER.info("Enhanced logging enabled")
+        _LOGGER.info("Fingerprint user mapping: %s", fingerprint_users)
+        _LOGGER.info("Detection window: %d seconds", detection_window)
+    
+    # Create lock entities
+    entities = []
+    for smartlock in smartlocks:
+        _LOGGER.info("Setting up lock: %s (ID: %s)", 
+                    smartlock.get('name', 'Unknown'), 
+                    smartlock.get('smartlockId', 'Unknown'))
+        
+        lock = NukiLock(
+            api=api, 
+            smartlock_data=smartlock, 
+            config_entry=config_entry,
+            scan_interval=scan_interval, 
+            fingerprint_users=fingerprint_users, 
+            detection_window=detection_window, 
+            enhanced_logging=enhanced_logging
+        )
+        entities.append(lock)
+    
+    if entities:
+        async_add_entities(entities, True)
+        _LOGGER.info("Successfully set up %d Nuki lock(s)", len(entities))
+
+
+# Legacy YAML platform setup (for backward compatibility)
 async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
     async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType = None,
 ) -> None:
-    """Set up the Nuki lock platform."""
+    """Set up the Nuki lock platform (legacy YAML config)."""
+    _LOGGER.warning("YAML configuration is deprecated. Please use the UI to configure Nuki integration.")
+    
     api_key = config[CONF_API_KEY]
     name = config.get(CONF_NAME, "")
     scan_interval = config[CONF_SCAN_INTERVAL]
-    fingerprint_users = config.get("fingerprint_users", {})
-    detection_window = config.get("fingerprint_detection_window", 120)
-    enhanced_logging = config.get("enable_enhanced_logging", False)
+    fingerprint_users = config.get(CONF_FINGERPRINT_USERS, {})
+    detection_window = config.get(CONF_FINGERPRINT_DETECTION_WINDOW, DEFAULT_DETECTION_WINDOW)
+    enhanced_logging = config.get(CONF_ENABLE_ENHANCED_LOGGING, False)
     
     _LOGGER.info("Setting up Nuki integration with API key: %s...", api_key[:8] + "***")
-    if enhanced_logging:
-        _LOGGER.info("Enhanced logging enabled")
-        _LOGGER.info("Fingerprint user mapping: %s", fingerprint_users)
-        _LOGGER.info("Detection window: %d seconds", detection_window)
     
     # Initialize the API client
     session = async_get_clientsession(hass)
@@ -141,8 +168,16 @@ async def async_setup_platform(
         _LOGGER.info("Setting up lock: %s (ID: %s)", 
                     smartlock.get('name', 'Unknown'), 
                     smartlock.get('smartlockId', 'Unknown'))
-        lock = NukiLock(nuki_api, smartlock, name, scan_interval, 
-                       fingerprint_users, detection_window, enhanced_logging)
+        lock = NukiLock(
+            api=nuki_api, 
+            smartlock_data=smartlock, 
+            config_entry=None,  # Legacy setup
+            name=name,
+            scan_interval=scan_interval, 
+            fingerprint_users=fingerprint_users, 
+            detection_window=detection_window, 
+            enhanced_logging=enhanced_logging
+        )
         entities.append(lock)
     
     if entities:
@@ -150,7 +185,8 @@ async def async_setup_platform(
         _LOGGER.info("Successfully set up %d Nuki lock(s)", len(entities))
     else:
         _LOGGER.error("No valid Nuki locks could be set up")
-        
+
+
 class NukiAPI:
     """Class to communicate with Nuki API."""
     
@@ -163,7 +199,7 @@ class NukiAPI:
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        self._base_url = "https://api.nuki.io"
+        self._base_url = NUKI_API_BASE
     
     async def _request(self, method: str, endpoint: str, data: Dict = None) -> Dict:
         """Make API request."""
@@ -211,7 +247,6 @@ class NukiAPI:
     async def test_connection(self) -> bool:
         """Test API connection."""
         try:
-            # Try to get account info - use correct endpoint
             await self._request("GET", "/account")
             return True
         except Exception as ex:
@@ -282,18 +317,62 @@ class NukiAPI:
         except Exception as ex:
             _LOGGER.error("Error getting smartlock logs: %s", ex)
             return []
+    
+    async def get_smartlock_auth(self, smartlock_id: int) -> list:
+        """Get smartlock auth entries (including keypads)."""
+        endpoint = f"/smartlock/{smartlock_id}/auth"
+        
+        try:
+            result = await self._request("GET", endpoint)
+            
+            # Handle different response formats
+            if isinstance(result, list):
+                return result
+            elif isinstance(result, dict) and 'auth' in result:
+                return result['auth']
+            elif isinstance(result, dict):
+                # Single auth entry returned as dict
+                return [result]
+            else:
+                _LOGGER.warning("Unexpected auth response format: %s", type(result))
+                return []
+                
+        except Exception as ex:
+            _LOGGER.warning("Error getting smartlock auth entries: %s", ex)
+            return []
+
 
 class NukiLock(LockEntity):
     """Representation of a Nuki Smart Lock."""
     
-    def __init__(self, api: NukiAPI, smartlock_data: Dict, name: str, scan_interval: timedelta, 
-                fingerprint_users: Dict = None, detection_window: int = 120, 
-                enhanced_logging: bool = False):
+    def __init__(
+        self, 
+        api: NukiAPI, 
+        smartlock_data: Dict, 
+        config_entry: ConfigEntry = None,
+        name: str = None,
+        scan_interval: timedelta = None, 
+        fingerprint_users: Dict = None, 
+        detection_window: int = DEFAULT_DETECTION_WINDOW, 
+        enhanced_logging: bool = False
+    ):
         """Initialize the lock."""
         self._api = api
         self._smartlock_id = smartlock_data["smartlockId"]
-        self._name = f"{name} {smartlock_data['name']}" if name else smartlock_data['name']
-        self._scan_interval = scan_interval
+        self._smartlock_name = smartlock_data.get('name', 'Unknown Lock')
+        self._config_entry = config_entry
+        
+        # Name handling for both config flow and legacy YAML
+        if config_entry:
+            # Config flow setup
+            self._name = self._smartlock_name
+            self._attr_name = self._smartlock_name
+        else:
+            # Legacy YAML setup
+            self._name = f"{name} {self._smartlock_name}" if name else self._smartlock_name
+            self._attr_name = self._name
+        
+        self._scan_interval = scan_interval or DEFAULT_SCAN_INTERVAL
         
         # Configurable fingerprint user mapping
         self._fingerprint_users = fingerprint_users or {}
@@ -308,6 +387,7 @@ class NukiLock(LockEntity):
         self._last_keypad_action = None
         self._last_keypad_user = None
         self._last_update = None
+        self._last_manual_action = None
         
         # Store initial data
         self._update_from_data(smartlock_data)
@@ -316,9 +396,16 @@ class NukiLock(LockEntity):
             _LOGGER.info("Nuki lock initialized with fingerprint users: %s", self._fingerprint_users)
     
     @property
-    def name(self) -> str:
-        """Return the name of the lock."""
-        return self._name
+    def device_info(self) -> DeviceInfo:
+        """Return device information."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, str(self._smartlock_id))},
+            name=self._smartlock_name,
+            manufacturer="Nuki",
+            model="Smart Lock Ultra" if "Ultra" in self._smartlock_name else "Smart Lock",
+            sw_version=None,
+            via_device=None,
+        )
     
     @property
     def unique_id(self) -> str:
@@ -333,7 +420,7 @@ class NukiLock(LockEntity):
     @property
     def is_locked(self) -> bool:
         """Return True if the lock is locked."""
-        return self._state == STATE_LOCKED
+        return self._state == LockState.LOCKED
     
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -387,10 +474,14 @@ class NukiLock(LockEntity):
     
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
-        # Set up periodic updates
-        async_track_time_interval(self.hass, self._async_update_ha_state, self._scan_interval)
+        # Set up periodic updates using the correct method name
+        async_track_time_interval(self.hass, self._async_update_wrapper, self._scan_interval)
         
         # Initial update
+        await self.async_update()
+    
+    async def _async_update_wrapper(self, now) -> None:
+        """Wrapper for the update method to work with async_track_time_interval."""
         await self.async_update()
     
     async def async_update(self) -> None:
@@ -402,6 +493,9 @@ class NukiLock(LockEntity):
             
             # Check for keypad actions
             await self._check_keypad_actions()
+            
+            # Check for manual actions
+            await self._check_manual_actions()
             
             self._available = True
             self._last_update = datetime.now().isoformat()
@@ -525,11 +619,8 @@ class NukiLock(LockEntity):
 
     def _is_keypad_action(self, trigger: int, user_name: str, source: int, auth_id: str, action: int) -> bool:
         """Determine if this log entry represents a keypad action."""
-        if trigger == 255 and user_name and user_name != "Unknown" and "Nuki Web" not in user_name:
-            return True
-        elif source in [1, 2] and user_name and user_name != "Unknown":
-            return True
-        elif auth_id and user_name and action == 3 and trigger == 255:
+        # Based on API docs: trigger 255 = keypad, source 1 = PIN, source 2 = Fingerprint
+        if trigger == 255 and source in [1, 2]:
             return True
         return False
     
@@ -556,18 +647,73 @@ class NukiLock(LockEntity):
     def _determine_access_method_and_user(self, user_name: str, logs: list, index: int, 
                                         source: int, auth_id: str) -> tuple:
         """Determine access method and actual user."""
-        if user_name == "Nuki Keypad":
-            access_method = "fingerprint"
-            actual_user = self._determine_fingerprint_user(logs, index, source, auth_id)
+        # Get the current log entry to check state
+        current_entry = logs[index] if index < len(logs) else {}
+        state = current_entry.get("state", 0)
+        
+        # Based on API docs: source 1 = PIN Code, source 2 = Fingerprint
+        if source == 2:
+            # Check for authentication errors first
+            if state == 225:  # Error wrong fingerprint
+                access_method = "fingerprint"
+                actual_user = "Unknown Fingerprint (Failed)"
+            elif user_name == "Nuki Keypad" and state != 0:
+                # Other error states with Nuki Keypad
+                access_method = "fingerprint"
+                actual_user = f"Unknown Fingerprint (Error {state})"
+            elif user_name and user_name not in ["Nuki Keypad", "Unknown"]:
+                # Successful fingerprint with real user name
+                access_method = "fingerprint"
+                actual_user = user_name
+            else:
+                # Fallback for "Nuki Keypad" with successful state
+                access_method = "fingerprint"
+                actual_user = self._determine_fingerprint_user_fallback(source)
+                
             if self._enhanced_logging:
-                _LOGGER.info("Detected fingerprint access by %s (original: %s)", actual_user, user_name)
+                _LOGGER.info("Detected fingerprint access by %s (source: %s, state: %s)", actual_user, source, state)
+                
+        elif source == 1:
+            # Check for authentication errors first
+            if state == 224:  # Error wrong entry code
+                access_method = "pin_code"
+                actual_user = "Unknown PIN (Failed)"
+            elif user_name == "Nuki Keypad" and state != 0:
+                # Other error states with PIN
+                access_method = "pin_code"
+                actual_user = f"Unknown PIN (Error {state})"
+            elif user_name and user_name not in ["Nuki Keypad", "Unknown"]:
+                # Successful PIN with real user name
+                access_method = "pin_code"
+                actual_user = user_name
+            else:
+                access_method = "pin_code"
+                actual_user = "PIN User"
+                
+            if self._enhanced_logging:
+                _LOGGER.info("Detected PIN code access by %s (source: %s, state: %s)", actual_user, source, state)
         else:
-            access_method = "pin_code"
-            actual_user = user_name
+            access_method = "unknown"
+            actual_user = user_name if user_name else "Unknown User"
             if self._enhanced_logging:
-                _LOGGER.info("Detected PIN code access by %s", actual_user)
+                _LOGGER.info("Unknown access method: user=%s, source=%s, state=%s", actual_user, source, state)
         
         return access_method, actual_user
+    
+    def _determine_fingerprint_user_fallback(self, source: int) -> str:
+        """Fallback method when API returns 'Nuki Keypad' instead of actual user name."""
+        try:
+            # Use configured source mapping
+            source_key = f"source_{source}"
+            if source_key in self._fingerprint_users and self._fingerprint_users[source_key]:
+                return self._fingerprint_users[source_key]
+            
+            # Fallback
+            return f"Fingerprint User (Source {source})"
+            
+        except Exception as ex:
+            _LOGGER.error("Error in fingerprint user fallback: %s", ex)
+            return "Unknown Fingerprint User"
 
     async def _process_recent_actions(self, recent_keypad_actions: list) -> None:
         """Process and fire events for recent keypad actions."""
@@ -613,11 +759,10 @@ class NukiLock(LockEntity):
                        action_data['actual_user'], action_data['access_method'])
             
             # Fire the event
-            self.hass.bus.async_fire("nuki_keypad_action", event_data)
+            self.hass.bus.async_fire(EVENT_KEYPAD_ACTION, event_data)
             
             # Small delay between events
             if idx < len(recent_keypad_actions) - 1:
-                import asyncio
                 await asyncio.sleep(0.1)
         
         # Update tracking
@@ -629,7 +774,6 @@ class NukiLock(LockEntity):
             _LOGGER.debug("Updated last processed keypad action to: %s by %s", 
                          self._last_keypad_action, self._last_keypad_user)
 
-
     def _determine_fingerprint_user(self, logs: list, current_index: int, source: int, auth_id: str) -> str:
         """
         Determine the actual user for fingerprint access using configurable mappings.
@@ -638,7 +782,7 @@ class NukiLock(LockEntity):
             if self._enhanced_logging:
                 _LOGGER.debug("Determining fingerprint user for auth_id: %s, source: %s", auth_id[-8:] if auth_id else "None", source)
             
-            # Method 1: Look for a recent PIN entry by the same auth_id
+            # Method 1: Look for a recent PIN entry by the same auth_id (MOST RELIABLE)
             auth_id_window = min(20, len(logs))  # Look at more entries for auth_id matching
             for i in range(max(0, current_index - auth_id_window), min(len(logs), current_index + 5)):
                 if i == current_index:
@@ -647,14 +791,17 @@ class NukiLock(LockEntity):
                 entry = logs[i]
                 entry_auth_id = entry.get("authId", "")
                 entry_name = entry.get("name", "")
+                entry_source = entry.get("source", 0)
+                entry_trigger = entry.get("trigger", 0)
                 entry_date = entry.get("date", "")
                 
+                # Look for PIN entries (source 1) with same auth_id
                 if (entry_auth_id and entry_auth_id == auth_id and 
-                    entry_name and entry_name != "Nuki Keypad" and 
-                    entry_name != "Unknown" and "Nuki Web" not in entry_name):
+                    entry_source == 1 and entry_trigger == 255 and  # PIN code entry
+                    entry_name and entry_name != "Unknown" and "Nuki Web" not in entry_name):
                     
                     if self._enhanced_logging:
-                        _LOGGER.debug("Found fingerprint user via auth_id match: %s (from entry: %s)", entry_name, entry_date)
+                        _LOGGER.debug("Found fingerprint user via auth_id match: %s (from PIN entry: %s)", entry_name, entry_date)
                     return entry_name
             
             # Method 2: Use configured source mapping
@@ -695,21 +842,22 @@ class NukiLock(LockEntity):
     def _analyze_recent_source_activity(self, logs: list, target_source: int) -> str:
         """Analyze recent activity to determine likely user for a source."""
         try:
-            # Look at recent non-fingerprint entries for this source
+            # Look at recent PIN entries (source 1) from keypad actions
             recent_entries = logs[:15]  # Last 15 entries
             source_users = []
             
             for entry in recent_entries:
-                entry_source = entry.get("source")
+                entry_source = entry.get("source", 0)
                 entry_name = entry.get("name", "")
+                entry_trigger = entry.get("trigger", 0)
                 
-                if (entry_source == target_source and 
-                    entry_name and entry_name != "Nuki Keypad" and 
-                    entry_name != "Unknown" and "Nuki Web" not in entry_name):
+                # Look for PIN codes (source 1) from keypad (trigger 255)
+                if (entry_trigger == 255 and entry_source == 1 and  # PIN code entry
+                    entry_name and entry_name != "Unknown" and "Nuki Web" not in entry_name):
                     source_users.append(entry_name)
             
             if source_users:
-                # Return the most recent user for this source
+                # Return the most recent user for PIN codes
                 return source_users[0]
                 
         except Exception as ex:
@@ -726,8 +874,12 @@ class NukiLock(LockEntity):
             
             for entry in recent_entries:
                 user = entry.get("name", "")
-                if (user and user != "Nuki Keypad" and user != "Unknown" and 
-                    "Nuki Web" not in user):
+                trigger = entry.get("trigger", 0)
+                source = entry.get("source", 0)
+                
+                # Only consider keypad PIN entries
+                if (trigger == 255 and source == 1 and  # PIN code entry
+                    user and user != "Unknown" and "Nuki Web" not in user):
                     recent_users.append(user)
             
             if recent_users:
@@ -761,30 +913,78 @@ class NukiLock(LockEntity):
         except Exception as ex:
             _LOGGER.error("Error in debug_recent_logs: %s", ex)
 
-# Service definitions for additional lock actions
-async def async_setup_services(hass: HomeAssistant) -> None:
-    """Set up services for Nuki integration."""
-    
-    async def handle_unlatch(call):
-        """Handle unlatch service call."""
-        entity_id = call.data.get("entity_id")
-        if not entity_id:
-            return
+    async def _check_manual_actions(self) -> None:
+        """Check for manual (non-keypad) actions and fire events."""
+        try:
+            logs = await self._api.get_smartlock_logs(self._smartlock_id, limit=10)
+            current_time_utc = datetime.now(timezone.utc)
+            
+            for log_entry in logs:
+                trigger = log_entry.get("trigger")
+                action = log_entry.get("action")
+                log_date = log_entry.get("date", "")
+                user_name = log_entry.get("name", "")
+                
+                # Detect manual operations (inside handle or external key)
+                if trigger == 1:  # Manual trigger
+                    try:
+                        log_time_utc = self._parse_timestamp(log_date)
+                        time_diff = (current_time_utc - log_time_utc).total_seconds()
+                        
+                        # Check if within detection window and not processed
+                        if (time_diff < self._detection_window and time_diff >= 0 and 
+                            (self._last_manual_action is None or log_date > self._last_manual_action)):
+                            
+                            # Determine if inside handle or external key based on action and context
+                            manual_type = self._determine_manual_type(log_entry, logs)
+                            
+                            # Fire manual action event
+                            event_data = {
+                                "entity_id": self.entity_id,
+                                "smartlock_id": self._smartlock_id,
+                                "action": action,
+                                "manual_type": manual_type,  # "inside_handle", "external_key", or "unknown"
+                                "timestamp": log_date,
+                                "time_diff_seconds": time_diff,
+                                "trigger_type": trigger,
+                                "user_name": user_name,
+                                "raw_entry": log_entry
+                            }
+                            
+                            _LOGGER.info("Manual action detected: %s via %s", action, manual_type)
+                            self.hass.bus.async_fire(EVENT_MANUAL_ACTION, event_data)
+                            
+                            self._last_manual_action = log_date
+                            break
+                            
+                    except Exception as ex:
+                        _LOGGER.error("Error processing manual action: %s", ex)
+                        
+        except Exception as ex:
+            _LOGGER.error("Error checking manual actions: %s", ex)
+
+    def _determine_manual_type(self, log_entry: dict, all_logs: list) -> str:
+        """
+        Determine if manual action was from inside handle or external key.
+        This is based on analysis of the action type and context.
+        """
+        action = log_entry.get("action")
+        state = log_entry.get("state", 0)
         
-        entity = hass.states.get(entity_id)
-        if entity and hasattr(entity, "async_unlatch"):
-            await entity.async_unlatch()
-    
-    async def handle_lock_n_go(call):
-        """Handle lock n go service call."""
-        entity_id = call.data.get("entity_id")
-        if not entity_id:
-            return
-        
-        entity = hass.states.get(entity_id)
-        if entity and hasattr(entity, "async_lock_n_go"):
-            await entity.async_lock_n_go()
-    
-    # Register services
-    hass.services.async_register(DOMAIN, "unlatch", handle_unlatch)
-    hass.services.async_register(DOMAIN, "lock_n_go", handle_lock_n_go)
+        # Heuristic approach - may need refinement based on your specific lock model
+        if action == 1:  # Unlock action
+            # If unlock action is manual, likely external key or inside handle
+            # External key typically shows as unlock without specific user
+            # Inside handle might show differently based on door configuration
+            if log_entry.get("name") == "":
+                return "external_key"
+            else:
+                return "inside_handle"
+        elif action == 2:  # Lock action
+            # Manual lock actions are typically from inside
+            return "inside_handle"
+        elif action == 3:  # Unlatch action
+            # Manual unlatch typically from inside handle
+            return "inside_handle"
+        else:
+            return "unknown"

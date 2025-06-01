@@ -1,0 +1,41 @@
+{
+  "info": {
+    "name": "Nuki Web API (Token-based)",
+    "_postman_id": "nuki-web-token-example",
+    "description": "Nuki Web API using personal API token (not OAuth2)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Get Smartlocks",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{nuki_api_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "https://api.nuki.io/smartlock",
+          "protocol": "https",
+          "host": ["api", "nuki", "io"],
+          "path": ["smartlock"]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "nuki_api_token",
+      "value": "PASTE-YOUR-TOKEN-HERE"
+    }
+  ]
+}

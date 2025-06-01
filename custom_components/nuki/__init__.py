@@ -1,35 +1,22 @@
 """
-Nuki Smart Lock Ultra Integration for Home Assistant.
+Nuki Smart Lock Integration for Home Assistant.
 
-This integration provides support for Nuki Smart Lock Ultra with Keypad,
+This integration provides support for Nuki Smart Lock with Keypad,
 including lock control, keypad event detection, and automation triggers.
 """
-import asyncio
 import logging
-from typing import Any, Dict
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY, Platform
+from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.typing import ConfigType
+
+from .const import DOMAIN, PLATFORMS
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN = "nuki"
-PLATFORMS = [Platform.LOCK]
 
-# Configuration schema
-CONFIG_SCHEMA = vol.Schema({
-    DOMAIN: vol.Schema({
-        vol.Optional("scan_interval", default=30): cv.positive_int,
-    })
-}, extra=vol.ALLOW_EXTRA)
-
-
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Nuki integration."""
     hass.data.setdefault(DOMAIN, {})
     
@@ -41,16 +28,40 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Nuki from a config entry."""
+    from .lock import NukiAPI
+    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+    
     hass.data.setdefault(DOMAIN, {})
+    
+    # Create API client
+    session = async_get_clientsession(hass)
+    api = NukiAPI(session, entry.data[CONF_API_KEY])
+    
+    # Test connection
+    try:
+        if not await api.test_connection():
+            raise ConfigEntryNotReady("Failed to connect to Nuki API")
+        
+        smartlocks = await api.get_smartlocks()
+        if not smartlocks:
+            raise ConfigEntryNotReady("No smart locks found")
+            
+    except Exception as ex:
+        _LOGGER.error("Error connecting to Nuki API: %s", ex)
+        raise ConfigEntryNotReady(f"Error connecting to Nuki API: {ex}") from ex
     
     # Store config entry data
     hass.data[DOMAIN][entry.entry_id] = {
-        "api_key": entry.data[CONF_API_KEY],
+        "api": api,
+        "smartlocks": smartlocks,
         "config_entry": entry,
     }
     
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    
+    # Setup entry update listener for options
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
     
     return True
 
@@ -65,83 +76,71 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Update options."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Set up services for Nuki integration."""
     
-    async def handle_unlatch(call: ServiceCall) -> None:
-        """Handle unlatch service call."""
-        entity_id = call.data.get("entity_id")
-        if not entity_id:
-            _LOGGER.error("No entity_id provided for unlatch service")
-            return
-        
-        # Find the entity in the lock platform
-        entity = None
-        for platform in hass.data.get("entity_platform", {}).values():
-            if platform.domain == "lock":
-                for ent in platform.entities.values():
-                    if ent.entity_id == entity_id and hasattr(ent, "async_unlatch"):
-                        entity = ent
-                        break
-        
-        if entity:
-            try:
-                await entity.async_unlatch()
-                _LOGGER.info("Unlatch command sent to %s", entity_id)
-            except Exception as ex:
-                _LOGGER.error("Error executing unlatch for %s: %s", entity_id, ex)
-        else:
-            _LOGGER.error("Entity %s not found or does not support unlatch", entity_id)
+    async def handle_debug_last_access(call: ServiceCall) -> None:
+        """Debug service to show last access detection logic."""
+        try:
+            _LOGGER.info("=== NUKI DEBUG SERVICE CALLED ===")
+            
+            # Find the API client for any entry
+            api = None
+            smartlocks = None
+            
+            for entry_data in hass.data[DOMAIN].values():
+                if isinstance(entry_data, dict) and "api" in entry_data:
+                    api = entry_data["api"]
+                    smartlocks = entry_data["smartlocks"]
+                    break
+            
+            if not api:
+                _LOGGER.error("No Nuki API client found in hass.data")
+                return
+            
+            if not smartlocks:
+                _LOGGER.error("No smartlocks found")
+                return
+                
+            smartlock_id = smartlocks[0]["smartlockId"]
+            _LOGGER.info("Using smartlock ID: %s", smartlock_id)
+            
+            # Get recent logs
+            logs = await api.get_smartlock_logs(smartlock_id, limit=20)
+            _LOGGER.info("Retrieved %d log entries from API", len(logs))
+            
+            # Show first 5 entries with keypad detection
+            for i, log_entry in enumerate(logs[:5]):
+                trigger = log_entry.get("trigger")
+                source = log_entry.get("source", 0)
+                user_name = log_entry.get("name", "")
+                state = log_entry.get("state", 0)
+                date = log_entry.get("date", "")
+                
+                is_keypad = trigger == 255 and source in [1, 2]
+                
+                _LOGGER.info("Entry %d: trigger=%s, source=%s, name='%s', state=%s, date=%s, IS_KEYPAD=%s", 
+                           i, trigger, source, user_name, state, date, is_keypad)
+                
+                if is_keypad:
+                    _LOGGER.info("  ^^ FIRST KEYPAD ENTRY - This should be the last access!")
+                    _LOGGER.info("  Expected: User='%s', Method='%s', Time='%s'", 
+                               user_name, 
+                               "Fingerprint" if source == 2 else "PIN Code",
+                               date)
+                    break
+            
+        except Exception as ex:
+            _LOGGER.error("Error in debug service: %s", ex)
+            import traceback
+            _LOGGER.error("Traceback: %s", traceback.format_exc())
     
-    async def handle_lock_n_go(call: ServiceCall) -> None:
-        """Handle lock n go service call."""
-        entity_id = call.data.get("entity_id")
-        if not entity_id:
-            _LOGGER.error("No entity_id provided for lock_n_go service")
-            return
-        
-        # Find the entity in the lock platform
-        entity = None
-        for platform in hass.data.get("entity_platform", {}).values():
-            if platform.domain == "lock":
-                for ent in platform.entities.values():
-                    if ent.entity_id == entity_id and hasattr(ent, "async_lock_n_go"):
-                        entity = ent
-                        break
-        
-        if entity:
-            try:
-                await entity.async_lock_n_go()
-                _LOGGER.info("Lock n Go command sent to %s", entity_id)
-            except Exception as ex:
-                _LOGGER.error("Error executing lock_n_go for %s: %s", entity_id, ex)
-        else:
-            _LOGGER.error("Entity %s not found or does not support lock_n_go", entity_id)
+    # Register debug service
+    hass.services.async_register(DOMAIN, "debug_last_access", handle_debug_last_access)
     
-    # Service schemas
-    SERVICE_UNLATCH_SCHEMA = vol.Schema({
-        vol.Required("entity_id"): cv.entity_id,
-    })
-    
-    SERVICE_LOCK_N_GO_SCHEMA = vol.Schema({
-        vol.Required("entity_id"): cv.entity_id,
-    })
-    
-    # Register services only if they don't exist
-    if not hass.services.has_service(DOMAIN, "unlatch"):
-        hass.services.async_register(
-            DOMAIN, 
-            "unlatch", 
-            handle_unlatch,
-            schema=SERVICE_UNLATCH_SCHEMA
-        )
-    
-    if not hass.services.has_service(DOMAIN, "lock_n_go"):
-        hass.services.async_register(
-            DOMAIN, 
-            "lock_n_go", 
-            handle_lock_n_go,
-            schema=SERVICE_LOCK_N_GO_SCHEMA
-        )
-    
-    _LOGGER.info("Nuki services registered: unlatch, lock_n_go")
+    _LOGGER.info("Nuki debug service registered")
